@@ -1,0 +1,128 @@
+
+
+var FromDate='2017-12-20';
+var ToDate='2017-12-21';
+
+var BedLevel=550; //Bed Level
+var FullTankLevel=560; //Full Tank Level
+
+Map.centerObject(Tank,14);
+Map.addLayer(Tank, null, 'Tank', null,0.1);
+
+// import srtm data
+var srtm = ee.Image("USGS/SRTMGL1_003");
+
+print(srtm);
+
+var img = ee.ImageCollection('COPERNICUS/S2')
+    .filterDate(FromDate, ToDate)
+    .filterBounds(Tank)
+    .filter("CLOUD_COVERAGE_ASSESSMENT<5")
+    .filter(ee.Filter.eq("MGRS_TILE","43QHV")) //44QKE or 43QHV
+    .filter(ee.Filter.eq('SENSING_ORBIT_NUMBER', 19))
+    .select(['B2','B3','B4','B8'])
+    .map(function(img){
+          var bands = img.normalizedDifference(['B3', 'B8']).rename('NDWI');
+      return img.addBands(bands)
+  });
+
+
+
+img = img.first().select('NDWI').clip(Tank);
+var date = ee.Date(img.get('system:time_start')).format('dd-MMM-yyyy');
+print('Timestamp: ', date); // ee.Date
+
+img = img.gt(0.2);
+img = img.updateMask(img)
+var waterPalette = ['white','blue'];
+Map.addLayer(img,{min:0,max:0.4, palette:waterPalette},"sentinel 2 NDWI") ;
+
+
+
+Map.style().set('cursor', 'crosshair');
+
+//-----
+var zones = img.gt(0);
+zones = zones.updateMask(zones.neq(0));
+
+// Convert the zones of the thresholded nightlights to vectors.
+var vectors = zones.addBands(img).reduceToVectors({
+  geometry: Tank ,
+  crs: img.projection(),
+  scale: 30,
+  geometryType: 'polygon',
+  eightConnected: false,
+  labelProperty: 'zone',
+  reducer: ee.Reducer.mean()
+});
+
+print(vectors)
+//Map.addLayer(vectors, null, 'Waterbody');
+
+var dem = srtm.clip(Tank);
+
+var viz = {min:BedLevel, max:FullTankLevel, palette:"ff0000,ffff00,00ff00,00ffff, 0000ff"};
+Map.addLayer(dem,viz,"elevation map");
+
+// set list with water levels
+var waterlevel = ee.List.sequence(BedLevel,FullTankLevel,2);
+print(waterlevel)
+
+
+var PrintChart = function(Tank,Title)
+{
+// Function to calculate the volume in the reservoir
+var calcVolume = function(level,list){
+   
+  // calculate area inundated
+  var inundated = srtm.clip(Tank).lte(ee.Number(level));
+   
+  // calculate water level in each pixel
+  var water = inundated.multiply(dem).subtract(ee.Number(level)).multiply(-1)
+   
+  // calculate area
+  var area = inundated.multiply(30).multiply(30);
+   
+  // calculate volume
+  var volume = area.multiply(water);
+   
+  // sum the volume
+  var totalvolume = volume.reduceRegion(ee.Reducer.sum(), Tank);
+   
+  // retunr result to list
+  return ee.List(list).add(totalvolume.get('elevation'));
+ };
+
+ // create emtpy list
+var first = ee.List([]);
+ 
+// iterate over water levels
+var Volumes = ee.List(waterlevel.iterate(calcVolume, first));
+ 
+ // set x an y values for list
+var xValues = ee.Array(Volumes).divide(1000);
+var yValues = ee.Array(waterlevel);
+
+//  Create the chart 
+var chart = ui.Chart.array.values(yValues, 0, xValues)
+    .setChartType('AreaChart')
+    .setOptions({
+      title: 'Relation Volume Waterlevel (' + Title + ')',
+      vAxis: {'title': 'water level (m)'},
+      hAxis: {'title': 'Volume (thousand KL)'},
+      pointSize: 3,
+});
+
+
+print(xValues.length());
+
+// Print the chart.
+print(chart);
+}
+
+PrintChart(Tank,'Full Tank');
+
+PrintChart(vectors,date.getInfo());
+
+
+
